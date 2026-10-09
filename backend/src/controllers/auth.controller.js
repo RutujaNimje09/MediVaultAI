@@ -46,16 +46,52 @@ const register = async (req, res) => {
             gender
         } = req.body;
 
-        if (!full_name || !email || !password) {
+        if (
+            typeof full_name !== "string" ||
+            typeof email !== "string" ||
+            typeof password !== "string" ||
+            !full_name.trim() ||
+            !email.trim() ||
+            !password
+        ) {
             return res.status(400).json({
                 success: false,
                 message: "Full name, email and password are required"
             });
         }
 
+        const normalizedName = full_name.trim();
+        const normalizedEmail = email.trim().toLowerCase();
+
+        if (normalizedName.length > 100) {
+            return res.status(400).json({
+                success: false,
+                message: "Full name must not exceed 100 characters"
+            });
+        }
+
+        const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+        if (
+            normalizedEmail.length > 254 ||
+            !emailPattern.test(normalizedEmail)
+        ) {
+            return res.status(400).json({
+                success: false,
+                message: "Please provide a valid email address"
+            });
+        }
+
+        if (password.length < 8 || password.length > 72) {
+            return res.status(400).json({
+                success: false,
+                message: "Password must be between 8 and 72 characters"
+            });
+        }
+
         const existingUser = await pool.query(
-            "SELECT id FROM users WHERE email = $1",
-            [email]
+        "SELECT id FROM users WHERE LOWER(email) = $1",
+        [normalizedEmail]
         );
 
         if (existingUser.rows.length > 0) {
@@ -81,12 +117,12 @@ const register = async (req, res) => {
                 gender,
                 created_at`,
             [
-                full_name,
-                email,
-                passwordHash,
-                phone || null,
-                date_of_birth || null,
-                gender || null
+            normalizedName,
+            normalizedEmail,
+            passwordHash,
+            phone || null,
+            date_of_birth || null,
+            gender || null
             ]
         );
 
