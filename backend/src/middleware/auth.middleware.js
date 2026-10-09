@@ -2,6 +2,13 @@ const jwt = require("jsonwebtoken");
 
 const authenticateToken = (req, res, next) => {
     try {
+
+        if (!process.env.JWT_SECRET) {
+            return res.status(500).json({
+                success: false,
+                message: "Server authentication configuration error"
+            });
+        }
         const authHeader = req.headers.authorization;
 
         if (!authHeader || !authHeader.startsWith("Bearer ")) {
@@ -11,7 +18,13 @@ const authenticateToken = (req, res, next) => {
             });
         }
 
-        const token = authHeader.split(" ")[1];
+        const [scheme, token] = authHeader.split(" ");
+        if (scheme !== "Bearer" || !token || !token.trim()) {
+            return res.status(401).json({
+                success: false,
+                message: "Invalid authentication header"
+            });
+        }
 
         const decoded = jwt.verify(
             token,
