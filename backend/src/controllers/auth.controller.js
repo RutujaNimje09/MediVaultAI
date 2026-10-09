@@ -378,7 +378,7 @@ const logout = async (req, res) => {
     try {
         const { refreshToken } = req.body;
 
-        if (!refreshToken) {
+        if (typeof refreshToken !== "string" || !refreshToken.trim()){
             return res.status(400).json({
                 success: false,
                 message: "Refresh token is required"
