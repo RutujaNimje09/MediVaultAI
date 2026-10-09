@@ -204,7 +204,10 @@ const login = async (req, res) => {
 
 
 // Refresh access token
+
 const refreshAccessToken = async (req, res) => {
+    const client = await pool.connect();
+
     try {
         const { refreshToken } = req.body;
 
@@ -215,24 +218,28 @@ const refreshAccessToken = async (req, res) => {
             });
         }
 
+        await client.query("BEGIN");
+
         const tokenHash = hashToken(refreshToken);
 
-        const result = await pool.query(
+        const result = await client.query(
             `SELECT
                 rt.id,
                 rt.user_id,
                 u.role,
                 u.is_active
              FROM refresh_tokens rt
-             JOIN users u
-                ON rt.user_id = u.id
+             JOIN users u ON rt.user_id = u.id
              WHERE rt.token_hash = $1
                AND rt.revoked_at IS NULL
-               AND rt.expires_at > CURRENT_TIMESTAMP`,
+               AND rt.expires_at > CURRENT_TIMESTAMP
+             FOR UPDATE OF rt`,
             [tokenHash]
         );
 
         if (result.rows.length === 0) {
+            await client.query("ROLLBACK");
+
             return res.status(401).json({
                 success: false,
                 message: "Invalid or expired refresh token"
@@ -242,11 +249,44 @@ const refreshAccessToken = async (req, res) => {
         const tokenRecord = result.rows[0];
 
         if (!tokenRecord.is_active) {
+            await client.query("ROLLBACK");
+
             return res.status(403).json({
                 success: false,
                 message: "Account is inactive"
             });
         }
+
+        const revokeResult = await client.query(
+            `UPDATE refresh_tokens
+             SET revoked_at = CURRENT_TIMESTAMP
+             WHERE id = $1
+               AND revoked_at IS NULL`,
+            [tokenRecord.id]
+        );
+
+        if (revokeResult.rowCount !== 1) {
+            await client.query("ROLLBACK");
+
+            return res.status(401).json({
+                success: false,
+                message: "Refresh token has already been used"
+            });
+        }
+
+        const newRefreshToken = crypto
+            .randomBytes(64)
+            .toString("hex");
+
+        const newRefreshTokenHash = hashToken(newRefreshToken);
+
+        await client.query(
+            `INSERT INTO refresh_tokens
+                (user_id, token_hash, expires_at)
+             VALUES
+                ($1, $2, CURRENT_TIMESTAMP + INTERVAL '7 days')`,
+            [tokenRecord.user_id, newRefreshTokenHash]
+        );
 
         const accessToken = jwt.sign(
             {
@@ -259,18 +299,25 @@ const refreshAccessToken = async (req, res) => {
             }
         );
 
-        res.json({
+        await client.query("COMMIT");
+
+        return res.json({
             success: true,
-            accessToken
+            accessToken,
+            refreshToken: newRefreshToken
         });
 
     } catch (error) {
-        console.error("Refresh token error:", error);
+        await client.query("ROLLBACK");
 
-        res.status(500).json({
+        console.error("Refresh token error:", error.message);
+
+        return res.status(500).json({
             success: false,
             message: "Server error while refreshing token"
         });
+    } finally {
+        client.release();
     }
 };
 
