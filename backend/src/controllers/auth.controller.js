@@ -148,10 +148,25 @@ const login = async (req, res) => {
     try {
         const { email, password } = req.body;
 
-        if (!email || !password) {
+        
+        if (
+            typeof email !== "string" ||
+            typeof password !== "string" ||
+            !email.trim() ||
+            !password
+        ) {
             return res.status(400).json({
                 success: false,
                 message: "Email and password are required"
+            });
+        }
+
+        const normalizedEmail = email.trim().toLowerCase();
+
+        if (normalizedEmail.length > 254) {
+            return res.status(400).json({
+                success: false,
+                message: "Invalid email or password"
             });
         }
 
@@ -168,7 +183,7 @@ const login = async (req, res) => {
                 is_active
              FROM users
              WHERE email = $1`,
-            [email]
+            [normalizedEmail]
         );
 
         if (result.rows.length === 0) {
