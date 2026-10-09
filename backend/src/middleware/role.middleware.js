@@ -1,4 +1,13 @@
 const authorizeRoles = (...allowedRoles) => {
+
+    if (
+        allowedRoles.length === 0 ||
+        !allowedRoles.every(role =>
+            ["PATIENT", "DOCTOR", "ADMIN"].includes(role)
+        )
+    ) {
+        throw new Error("Invalid role configuration");
+    }
     return (req, res, next) => {
         if (!req.user) {
             return res.status(401).json({
