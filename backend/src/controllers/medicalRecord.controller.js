@@ -1,4 +1,5 @@
 const pool = require("../config/database");
+const fs = require("fs").promises;
 
 
 // Get medical records for current user
@@ -198,6 +199,43 @@ const createMedicalRecord = async (req, res) => {
         const mimeType = req.file.mimetype;
         const fileSize = req.file.size;
 
+        let ocrText = null;
+        let ocrStatus = 'PENDING';
+        let timeoutId;
+
+        try {
+            const fileBuffer = await fs.readFile(filePath);
+            const blob = new Blob([fileBuffer], { type: mimeType });
+            const formData = new FormData();
+            formData.append("file", blob, fileName);
+
+            const controller = new AbortController();
+            timeoutId = setTimeout(() => controller.abort(), 30000);
+
+            const ocrResponse = await fetch("http://127.0.0.1:8000/ocr", {
+                method: "POST",
+                body: formData,
+                signal: controller.signal
+            });
+
+            if (ocrResponse.ok) {
+                const ocrData = await ocrResponse.json();
+                if (ocrData.success) {
+                    ocrText = ocrData.extracted_text || null;
+                    ocrStatus = 'COMPLETED';
+                } else {
+                    ocrStatus = 'FAILED';
+                }
+            } else {
+                ocrStatus = 'FAILED';
+            }
+        } catch (ocrError) {
+            console.error("OCR Service error:", ocrError);
+            ocrStatus = 'FAILED';
+        } finally {
+            if (timeoutId) clearTimeout(timeoutId);
+        }
+
         const result = await pool.query(
             `INSERT INTO medical_records (
                 owner_user_id,
@@ -211,11 +249,13 @@ const createMedicalRecord = async (req, res) => {
                 file_name,
                 file_path,
                 mime_type,
-                file_size
+                file_size,
+                ocr_text,
+                ocr_status
             )
             VALUES (
                 $1, $2, $3, $4, $5, $6, $7,
-                $8, $9, $10, $11, $12
+                $8, $9, $10, $11, $12, $13, $14
             )
             RETURNING *`,
             [
@@ -230,7 +270,9 @@ const createMedicalRecord = async (req, res) => {
                 fileName,
                 filePath,
                 mimeType,
-                fileSize
+                fileSize,
+                ocrText,
+                ocrStatus
             ]
         );
 
@@ -242,6 +284,12 @@ const createMedicalRecord = async (req, res) => {
 
     } catch (error) {
         console.error("Create medical record error:", error);
+
+        if (req.file && req.file.path) {
+            fs.unlink(req.file.path).catch(err =>
+                console.error("Failed to delete orphaned file:", err)
+            );
+        }
 
         res.status(500).json({
             success: false,

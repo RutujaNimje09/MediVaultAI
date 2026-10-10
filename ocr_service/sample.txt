@@ -1,0 +1,5 @@
+MEDICAL REPORT
+Patient: Test User
+Test: Blood Glucose
+Result: 110 mg/dL
+Status: Sample document for OCR testing.
