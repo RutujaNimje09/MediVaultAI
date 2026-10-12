@@ -257,12 +257,12 @@ const login = async (req, res) => {
 // Refresh access token
 
 const refreshAccessToken = async (req, res) => {
-    const client = await pool.connect();
-
-    try {
+    let client;
+try {
+    client = await pool.connect();
         const { refreshToken } = req.body;
 
-        if (!refreshToken) {
+        if (typeof refreshToken !== "string" || !refreshToken.trim()) {
             return res.status(400).json({
                 success: false,
                 message: "Refresh token is required"
@@ -368,7 +368,9 @@ const refreshAccessToken = async (req, res) => {
             message: "Server error while refreshing token"
         });
     } finally {
+        if (client) {
         client.release();
+    }
     }
 };
 
