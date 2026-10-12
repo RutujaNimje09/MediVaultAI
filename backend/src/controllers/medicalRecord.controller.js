@@ -1,4 +1,5 @@
 const pool = require("../config/database");
+const fs = require("fs").promises;
 
 
 // Get medical records for current user
@@ -28,6 +29,7 @@ const getMedicalRecords = async (req, res) => {
                 mr.ocr_text,
                 mr.ocr_status,
                 mr.ocr_verified,
+                mr.ocr_verified_at,
                 mr.is_archived,
                 mr.created_at,
                 mr.updated_at,
@@ -131,6 +133,7 @@ const getMedicalRecordById = async (req, res) => {
                 mr.ocr_text,
                 mr.ocr_status,
                 mr.ocr_verified,
+                mr.ocr_verified_at,
                 mr.is_archived,
                 mr.created_at,
                 mr.updated_at,
@@ -198,6 +201,44 @@ const createMedicalRecord = async (req, res) => {
         const mimeType = req.file.mimetype;
         const fileSize = req.file.size;
 
+        let ocrText = null;
+        let ocrStatus = 'PENDING';
+        let timeoutId;
+
+        try {
+            const fileBuffer = await fs.readFile(filePath);
+            const blob = new Blob([fileBuffer], { type: mimeType });
+            const formData = new FormData();
+            formData.append("file", blob, fileName);
+
+            const controller = new AbortController();
+            timeoutId = setTimeout(() => controller.abort(), 30000);
+
+            const ocrServiceUrl = process.env.OCR_SERVICE_URL || "http://127.0.0.1:8000/ocr";
+            const ocrResponse = await fetch(ocrServiceUrl, {
+                method: "POST",
+                body: formData,
+                signal: controller.signal
+            });
+
+            if (ocrResponse.ok) {
+                const ocrData = await ocrResponse.json();
+                if (ocrData.success) {
+                    ocrText = ocrData.extracted_text || null;
+                    ocrStatus = 'COMPLETED';
+                } else {
+                    ocrStatus = 'FAILED';
+                }
+            } else {
+                ocrStatus = 'FAILED';
+            }
+        } catch (ocrError) {
+            console.error("OCR Service error:", ocrError);
+            ocrStatus = 'FAILED';
+        } finally {
+            if (timeoutId) clearTimeout(timeoutId);
+        }
+
         const result = await pool.query(
             `INSERT INTO medical_records (
                 owner_user_id,
@@ -211,11 +252,13 @@ const createMedicalRecord = async (req, res) => {
                 file_name,
                 file_path,
                 mime_type,
-                file_size
+                file_size,
+                ocr_text,
+                ocr_status
             )
             VALUES (
                 $1, $2, $3, $4, $5, $6, $7,
-                $8, $9, $10, $11, $12
+                $8, $9, $10, $11, $12, $13, $14
             )
             RETURNING *`,
             [
@@ -230,7 +273,9 @@ const createMedicalRecord = async (req, res) => {
                 fileName,
                 filePath,
                 mimeType,
-                fileSize
+                fileSize,
+                ocrText,
+                ocrStatus
             ]
         );
 
@@ -243,6 +288,12 @@ const createMedicalRecord = async (req, res) => {
     } catch (error) {
         console.error("Create medical record error:", error);
 
+        if (req.file && req.file.path) {
+            fs.unlink(req.file.path).catch(err =>
+                console.error("Failed to delete orphaned file:", err)
+            );
+        }
+
         res.status(500).json({
             success: false,
             message: "Server error while uploading medical record"
@@ -251,8 +302,186 @@ const createMedicalRecord = async (req, res) => {
 };
 
 
+// Update and verify extracted OCR text for a medical record
+const updateMedicalRecordOcr = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { ocr_text, ocr_verified = true } = req.body;
+
+        if (ocr_text === undefined || ocr_text === null) {
+            return res.status(400).json({
+                success: false,
+                message: "ocr_text is required for updating OCR content"
+            });
+        }
+
+        const result = await pool.query(
+            `UPDATE medical_records
+             SET
+                 ocr_text = $1,
+                 ocr_verified = $2,
+                 ocr_verified_at = CURRENT_TIMESTAMP,
+                 ocr_status = 'COMPLETED',
+                 updated_at = CURRENT_TIMESTAMP
+             WHERE id = $3
+               AND owner_user_id = $4
+               AND is_archived = FALSE
+             RETURNING
+                 id,
+                 title,
+                 description,
+                 doctor_name,
+                 hospital_name,
+                 record_date,
+                 file_name,
+                 file_path,
+                 mime_type,
+                 file_size,
+                 ocr_text,
+                 ocr_status,
+                 ocr_verified,
+                 ocr_verified_at,
+                 is_archived,
+                 created_at,
+                 updated_at`,
+            [
+                ocr_text,
+                Boolean(ocr_verified),
+                id,
+                req.user.userId
+            ]
+        );
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({
+                success: false,
+                message: "Medical record not found or unauthorized"
+            });
+        }
+
+        res.json({
+            success: true,
+            message: "OCR text updated and verified successfully",
+            record: result.rows[0]
+        });
+
+    } catch (error) {
+        console.error("Update medical record OCR error:", error);
+        res.status(500).json({
+            success: false,
+            message: "Server error while updating OCR text"
+        });
+    }
+};
+
+
+// Update general medical record fields and/or OCR text
+const updateMedicalRecord = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const {
+            title,
+            description,
+            doctor_name,
+            hospital_name,
+            record_date,
+            category_id,
+            family_profile_id,
+            ocr_text,
+            ocr_verified
+        } = req.body;
+
+        // Verify existence and ownership
+        const existing = await pool.query(
+            `SELECT * FROM medical_records WHERE id = $1 AND owner_user_id = $2 AND is_archived = FALSE`,
+            [id, req.user.userId]
+        );
+
+        if (existing.rows.length === 0) {
+            return res.status(404).json({
+                success: false,
+                message: "Medical record not found or unauthorized"
+            });
+        }
+
+        const current = existing.rows[0];
+
+        const newTitle = title !== undefined ? title : current.title;
+        const newDescription = description !== undefined ? description : current.description;
+        const newDoctor = doctor_name !== undefined ? doctor_name : current.doctor_name;
+        const newHospital = hospital_name !== undefined ? hospital_name : current.hospital_name;
+        const newDate = record_date !== undefined ? record_date : current.record_date;
+        const newCategory = category_id !== undefined ? category_id : current.category_id;
+        const newFamily = family_profile_id !== undefined ? family_profile_id : current.family_profile_id;
+
+        let newOcrText = current.ocr_text;
+        let newOcrVerified = current.ocr_verified;
+        let newOcrVerifiedAt = current.ocr_verified_at;
+        let newOcrStatus = current.ocr_status;
+
+        if (ocr_text !== undefined) {
+            newOcrText = ocr_text;
+            newOcrVerified = ocr_verified !== undefined ? Boolean(ocr_verified) : true;
+            newOcrVerifiedAt = new Date();
+            newOcrStatus = 'COMPLETED';
+        }
+
+        const result = await pool.query(
+            `UPDATE medical_records
+             SET
+                 title = $1,
+                 description = $2,
+                 doctor_name = $3,
+                 hospital_name = $4,
+                 record_date = $5,
+                 category_id = $6,
+                 family_profile_id = $7,
+                 ocr_text = $8,
+                 ocr_verified = $9,
+                 ocr_verified_at = $10,
+                 ocr_status = $11,
+                 updated_at = CURRENT_TIMESTAMP
+             WHERE id = $12
+              AND owner_user_id = $13
+              AND is_archived = FALSE
+             RETURNING *`,
+            [
+                newTitle,
+                newDescription,
+                newDoctor,
+                newHospital,
+                newDate,
+                newCategory,
+                newFamily,
+                newOcrText,
+                newOcrVerified,
+                newOcrVerifiedAt,
+                newOcrStatus,
+                id,
+                req.user.userId
+            ]
+        );
+
+        res.json({
+            success: true,
+            message: "Medical record updated successfully",
+            record: result.rows[0]
+        });
+
+    } catch (error) {
+        console.error("Update medical record error:", error);
+        res.status(500).json({
+            success: false,
+            message: "Server error while updating medical record"
+        });
+    }
+};
+
+
 module.exports = {
     getMedicalRecords,
     getMedicalRecordById,
-    createMedicalRecord
+    createMedicalRecord,
+    updateMedicalRecordOcr,
+    updateMedicalRecord
 };
