@@ -1,55 +1,104 @@
 # MediVault AI - OCR Service
 
-A standalone Python microservice built with FastAPI and Tesseract OCR to extract text from medical documents (PDF, JPG, JPEG, PNG).
+A standalone Python microservice built with FastAPI, Google Gemini Vision API, and Tesseract OCR to extract text from medical documents (PDF, JPG, JPEG, PNG).
 
-## Prerequisites (Windows)
+## Features
 
-1. **Python 3.9+** installed on your system.
-2. **Tesseract OCR Engine** installed.
-   - Download the Windows installer from: https://github.com/UB-Mannheim/tesseract/wiki
-   - Install it (usually to `C:\Program Files\Tesseract-OCR`).
-   - Add the Tesseract directory to your system's PATH environment variable, or configure the path in `main.py`.
+- **Google Gemini Vision API**: High-accuracy transcription of both printed and handwritten medical documents.
+- **Tesseract OCR Fallback**: Offline fallback when Gemini is unavailable, unconfigured, or offline.
+- **PyMuPDF (`fitz`) Integration**: Direct digital text extraction for text PDFs; automatic high-resolution rendering (300 DPI) and vision OCR for scanned PDFs.
+- **Configurable Models**: Free-tier vision models like `gemini-2.0-flash` or `gemini-1.5-flash`.
+- **Safe Operation**: No secrets, medical document text, or image bytes are exposed in HTTP responses or service logs.
 
-## Setup Instructions
+> [!IMPORTANT]
+> **Data Privacy Notice:** Using the Google Gemini API transmits document contents to Google's generative AI service for processing. In the Google AI Studio free tier, prompt data may be used for model improvement. **Only non-sensitive test documents should be processed on the free tier.**
 
-1. Open a terminal in this `ocr_service` directory.
-2. Create a virtual environment:
-   ```cmd
-   python -m venv venv
-   ```
-3. Activate the virtual environment:
-   ```cmd
-   venv\Scripts\activate
-   ```
-4. Install the dependencies:
-   ```cmd
-   pip install -r requirements.txt
-   ```
+---
 
-## Running the Service
+## Configuration
 
-1. Ensure your virtual environment is active.
-2. Start the FastAPI server:
-   ```cmd
-   uvicorn main:app --reload --port 8000
-   ```
-3. The service will be available at `http://localhost:8000`.
+Copy `.env.example` to `.env` inside `ocr_service/` (or configure in the root `.env`):
+
+```env
+# OCR Provider: "auto" (default: uses Gemini if key is provided, else Tesseract), "gemini", or "tesseract"
+OCR_PROVIDER=auto
+
+# Google Gemini API Key (Obtain from https://aistudio.google.com/)
+GEMINI_API_KEY=your_gemini_api_key_here
+
+# Model identifier (gemini-2.0-flash is recommended and free-tier capable)
+GEMINI_MODEL=gemini-2.0-flash
+
+# Tesseract Executable Path (Windows fallback)
+TESSERACT_CMD=D:\Tesseract-OCR\tesseract.exe
+
+# Maximum PDF pages to process with OCR (protection against oversized documents)
+MAX_PDF_PAGES=15
+
+# Request timeout in seconds for Gemini API calls
+GEMINI_TIMEOUT_SECONDS=25
+```
+
+---
+
+## Setup & Running
+
+### 1. Activate Environment & Install Dependencies
+
+From `ocr_service`:
+
+```cmd
+venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+### 2. Run Test Suite
+
+```cmd
+python test_service.py
+```
+
+### 3. Start the FastAPI Service
+
+```cmd
+uvicorn main:app --reload --port 8000
+```
+
+The service will be available at `http://localhost:8000`.
+
+---
 
 ## API Endpoints
 
-### POST /ocr
+### `GET /health`
+Returns service status, configured provider, and whether Gemini Vision is configured.
 
-Accepts a file upload and returns the extracted text.
+**Response:**
+```json
+{
+  "status": "ok",
+  "service": "MediVaultAI OCR",
+  "gemini_configured": false,
+  "gemini_model": "gemini-2.0-flash",
+  "ocr_provider": "auto"
+}
+```
+
+### `POST /ocr`
+Accepts a file upload (`file`) and extracts text.
 
 - **Content-Type**: `multipart/form-data`
 - **Parameter**: `file` (File)
 - **Allowed Types**: `image/jpeg`, `image/png`, `application/pdf`
 - **Size Limit**: 10 MB
 
-#### Testing with cURL
-```cmd
-curl -X POST "http://localhost:8000/ocr" -H "accept: application/json" -H "Content-Type: multipart/form-data" -F "file=@C:\path\to\your\document.pdf"
+**Response:**
+```json
+{
+  "success": true,
+  "filename": "prescription.png",
+  "extracted_text": "Amoxicillin 500mg...",
+  "provider": "gemini"
+}
 ```
-
-You can also use the interactive Swagger UI to test the endpoint by navigating to:
-`http://localhost:8000/docs`
+*(If Tesseract fallback was used, `"provider": "tesseract"` is returned).*
